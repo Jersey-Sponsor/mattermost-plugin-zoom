@@ -6,6 +6,8 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"net/url"
+	"path"
 	"path/filepath"
 	"sync"
 
@@ -27,6 +29,9 @@ const (
 	falseString = "false"
 
 	zoomProviderName = "Zoom"
+
+	chimeraZoomUserLevelAppIdentifier    = "plugin-zoom-user-level"
+	chimeraZoomAccountLevelAppIdentifier = "plugin-zoom-account-level"
 )
 
 type Plugin struct {
@@ -44,7 +49,8 @@ type Plugin struct {
 	// setConfiguration for usage.
 	configuration *configuration
 
-	siteURL string
+	siteURL    string
+	chimeraURL string
 
 	telemetryClient telemetry.Client
 	tracker         telemetry.Tracker
@@ -65,6 +71,11 @@ func (p *Plugin) OnActivate() error {
 
 	if err := p.registerSiteURL(); err != nil {
 		return errors.Wrap(err, "could not register site URL")
+	}
+
+	p.registerChimeraURL()
+	if config.UsePreregisteredApplication && p.chimeraURL == "" {
+		return errors.New("cannot use pre-registered application if Chimera URL is not set or empty. Please set a PluginSettings.ChimeraOAuthProxyURL or use a custom application")
 	}
 
 	command, err := p.getCommand()
@@ -133,6 +144,14 @@ func (p *Plugin) registerSiteURL() error {
 	return nil
 }
 
+// registerChimeraURL fetches the Chimera URL and sets it in the plugin object.
+func (p *Plugin) registerChimeraURL() {
+	chimeraURL := p.API.GetConfig().PluginSettings.ChimeraOAuthProxyUrl
+	if chimeraURL != nil {
+		p.chimeraURL = *chimeraURL
+	}
+}
+
 // getActiveClient returns an OAuth Zoom client if available, otherwise it returns the API client.
 func (p *Plugin) getActiveClient(user *model.User) (Client, string, error) {
 	config := p.getConfiguration()
@@ -178,12 +197,23 @@ func (p *Plugin) getActiveClient(user *model.User) (Client, string, error) {
 // getOAuthConfig returns the Zoom OAuth2 flow configuration.
 func (p *Plugin) getOAuthConfig() *oauth2.Config {
 	config := p.getConfiguration()
-	zoomURL := p.getZoomURL()
-
 	adminString := ""
-	if p.configuration.AccountLevelApp {
+	if config.AccountLevelApp {
 		adminString = ":admin"
 	}
+	scopes := []string{
+		"user:read" + adminString,
+		"meeting:write" + adminString,
+		"webinar:write" + adminString,
+		"recording:write" + adminString,
+	}
+
+	if config.UsePreregisteredApplication {
+		return p.getOAuthConfigForChimeraApp(scopes)
+	}
+
+	zoomURL := p.getZoomURL()
+
 	return &oauth2.Config{
 		ClientID:     config.OAuthClientID,
 		ClientSecret: config.OAuthClientSecret,
@@ -192,13 +222,38 @@ func (p *Plugin) getOAuthConfig() *oauth2.Config {
 			TokenURL: fmt.Sprintf("%v/oauth/token", zoomURL),
 		},
 		RedirectURL: fmt.Sprintf("%s/plugins/zoom/oauth2/complete", p.siteURL),
-		Scopes: []string{
-			"user:read" + adminString,
-			"meeting:write" + adminString,
-			"webinar:write" + adminString,
-			"recording:write" + adminString,
+		Scopes:      scopes,
+	}
+}
+
+func (p *Plugin) getOAuthConfigForChimeraApp(scopes []string) *oauth2.Config {
+	baseURL := fmt.Sprintf("%s/v1/zoom/%s", p.chimeraURL, p.getZoomAppId())
+	authURL, _ := url.Parse(baseURL)
+	tokenURL, _ := url.Parse(baseURL)
+
+	authURL.Path = path.Join(authURL.Path, "oauth", "authorize")
+	tokenURL.Path = path.Join(tokenURL.Path, "oauth", "token")
+
+	redirectURL, _ := url.Parse(fmt.Sprintf("%s/plugins/zoom/oauth2/complete", p.siteURL))
+
+	return &oauth2.Config{
+		ClientID:     "placeholder",
+		ClientSecret: "placeholder",
+		Scopes:       scopes,
+		RedirectURL:  redirectURL.String(),
+		Endpoint: oauth2.Endpoint{
+			AuthURL:   authURL.String(),
+			TokenURL:  tokenURL.String(),
+			AuthStyle: oauth2.AuthStyleInHeader,
 		},
 	}
+}
+
+func (p *Plugin) getZoomAppId() string {
+	if p.getConfiguration().AccountLevelApp {
+		return chimeraZoomAccountLevelAppIdentifier
+	}
+	return chimeraZoomUserLevelAppIdentifier
 }
 
 // authenticateAndFetchZoomUser uses the active Zoom client to authenticate and return the Zoom user

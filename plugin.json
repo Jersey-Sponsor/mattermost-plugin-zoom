@@ -24,6 +24,13 @@
         "footer": "",
         "settings": [
             {
+                "key": "UsePreregisteredApplication",
+                "display_name": "Use Preregistered OAuth Application:",
+                "type": "bool",
+                "help_text": "When true, instructs plugin to use preregistered Zoom OAuth application - application registration steps can be skipped. Requires Chimera Proxy URL to be configured for the server. Can be used only with Zoom's vendor-hosted SaaS service.",
+                "default": false
+            },
+            {
                 "key": "ZoomURL",
                 "display_name": "Zoom URL:",
                 "type": "text",
